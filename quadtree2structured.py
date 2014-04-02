@@ -20,7 +20,104 @@ class parentGrid:
         self.originX = originX
         self.originY = originY
 
+class qtpush:
 
+    def __init__(self, tsfile, parentGrid, levqtmax, bin=False, outfile=None):
+        self.tsfile = tsfile
+        self.nlaybg = parentGrid.nlay
+        self.nrowbg = parentGrid.nrows
+        self.ncolbg = parentGrid.ncols
+        self.levqtmax = levqtmax
+        self.bin = bin
+        self.outfile = outfile
+        pass
+        
+    def rangefinder(self, qcode, ibgzero, jbgzero, levqtmax, nrowbg, ncolbg):
+        
+        """
+        written by Chris Langevin, USGS Office of Groundwater 4/2/2014
+        
+        Return the sample grid starting and ending rows and columns for this
+        (k,i,j) base grid cell and this quadrant code.
+        qcode is the quadrant code
+        ibg, jbg is the base grid cell indices (should be zero based)
+        levqtmax is the maximum refinement level of the quadtree grid
+        nrowbg is the number of rows in the base grid
+        ncolbg is the number of columns in the base grid
+        """
+        
+        #calculate size of sample grid using 
+        #number of cells per base grid (nsgperbg)
+        nsgperbg = 2 ** levqtmax
+        nrowsg = nsgperbg * nrowbg
+        ncolsg = nsgperbg * ncolbg
+        
+        #finding starting and ending ranges for base grid cell i,j
+        isgmin = ibgzero * nsgperbg
+        isgmax = isgmin + nsgperbg
+        jsgmin = jbgzero * nsgperbg
+        jsgmax = jsgmin + nsgperbg
+    
+        #process qcode    
+        qcode = qcode.strip()
+        if len(qcode)>0:
+            for q in qcode:
+                if q is '1':  #upper left
+                    isgmax = isgmin + (isgmax - isgmin) / 2
+                    jsgmax = jsgmin + (jsgmax - jsgmin) / 2
+                elif q is '2':  #upper right
+                    isgmax = isgmin + (isgmax - isgmin) / 2
+                    jsgmin = jsgmax - (jsgmax - jsgmin) / 2
+                elif q is '3':  #lower left
+                    isgmin = isgmax - (isgmax - isgmin) / 2
+                    jsgmax = jsgmin + (jsgmax - jsgmin) / 2
+                elif q is '4':  #lower right
+                    isgmin = isgmax - (isgmax - isgmin) / 2
+                    jsgmin = jsgmax - (jsgmax - jsgmin) / 2
+                else:
+                    msg = 'Uknown quadrant code: ' + q + ' for cell ' + str(i,j)
+                    raise Exception(msg)
+        
+        #return with ranges
+        return (isgmin,isgmax,jsgmin,jsgmax)
+                
+    def tsf2inodesg(self):
+        """
+        written by Chris Langevin, USGS Office of Groundwater 4/2/2014
+        Construct inodesg, which is an integer sample grid that has the quadtree
+        node number in it.
+        levqtmax is the maximum refinement level of the quadtree grid
+        nlaybg is the number of layers in the base grid
+        nrowbg is the number of rows in the base grid
+        ncolbg is the number of columns in the base grid
+        """
+        f = open(self.tsfile)
+        nsgperbg = 2 ** self.levqtmax
+        nrowsg = nsgperbg * self.nrowbg
+        ncolsg = nsgperbg * self.ncolbg
+        inodesg = np.zeros( (self.nlaybg, nrowsg, ncolsg), dtype=np.int)
+        irowidx = np.zeros( (nrowsg * ncolsg), dtype=np.int)
+        icolidx = np.zeros( (nrowsg * ncolsg), dtype=np.int)
+        nodes = f.readline()
+        for line in f:
+            lnlst = line.split()
+            n = int(lnlst[0].replace(',',''))
+            print '\r{0}'.format(n),
+            idx = lnlst[1]
+            k,i,j = eval(idx)
+            qcode=''
+            if(len(lnlst)>2):
+                qcode=lnlst[2]
+            (isgmin,isgmax,jsgmin,jsgmax) = self.rangefinder(qcode, i-1, j-1, self.levqtmax, 
+                                                        self.nrowbg, self.ncolbg)
+            inodesg[k-1, isgmin:isgmax, jsgmin:jsgmax] = n-1
+        f.close()
+        if bin:
+            inodesg.dump(self.outfile)
+        return inodesg
+
+        
+        
 class buildIndex:
     '''
     This class takes information on the parent grid and from the *.nod file, and constructs a "base" uniform grid
@@ -68,38 +165,25 @@ class buildIndex:
                 print "\nLayer ", l + 1
                 # convert dataframe back to numpy to (hopefully) speed iteration
                 layernodes = self.nodedata[self.nodedata['lay'] == l+1].to_records()
-
+                lnodes = len(layernodes)
+                
                 #for index, node in layernodes.iterrows():
                 knt = 0
                 uniformgrid = np.empty((self.nbasecols, self.nbaserows))
-                #ymax = np.max(self.Y)
-                #ymin = ymax - parentGrid.dxy / self.min_spacing
                 for node in layernodes:
                     knt += 1
-                    print "\rUSG node {0}, {1:d}% complete".format(node['node'], 100 * knt / len(layernodes)),
+                    print "\rUSG node {0}, {1:d}% complete".format(node['node'], 100 * knt / lnodes),
                     
                     # set y search limits
-                    
-                    
                     basecols = np.where((self.X > node['xmin']) & (self.X < node['xmax']))
                     baserows = np.where((self.Y > node['ymin']) & (self.Y < node['ymax']))
-                    
-                    ''' this actually appeared to slow down execution
-                    # reset y search limits based on cells just returned
-                    ymax = np.max(basecols) + parentGrid.dxy / self.min_spacing
-                    if ymax > np.max(self.Y):
-                        ymax = np.max(self.Y)
-                    ymin = np.min(basecols) - parentGrid.dxy / self.min_spacing
-                    if ymin < np.min(self.Y):
-                        ymin = np.min(self.Y)
-                    '''
-                    
+
                     #baseinds = np.where((uniformcoords[0] > node['xmin']) & (uniformcoords[0] < node['xmax']) & (uniformcoords[1] > node['ymin']) & (uniformcoords[1] < node['ymax']))
                     baserows = np.squeeze(baserows)
                     baseinds = np.meshgrid(basecols, baserows)
                     uniformgrid[baseinds] = node['node'] -1 # zero indexing
 
-                uniformgrid = np.transpose(uniformgrid)
+                uniformgrid = np.transpose(uniformgrid).astype(int)
                 print "\nsaving Layer {1} node references to {0}{1}.dat".format(self.indexfile_basename, l+1)    
                 #np.savetxt("{0}{1}.dat".format(self.indexfile_basename, l+1), uniformgrid, fmt='%d', delimiter=' ')
                 uniformgrid.dump("{0}{1}.dat".format(self.indexfile_basename, l+1))
@@ -120,7 +204,7 @@ class QTarray:
             raise IOError('No index files found! Run build_index method first to create index files '
                           'for mapping USG output to regular grid.')
 
-    def mapQT2base(self, QTarray, parentGrid, base_dxy, layers=[1]):
+    def mapQT2base(self, QTarray, parentGrid, base_dxy, layers='all'):
         '''
         maps values in MODFLOW-USG array to a base array, using index files generated above
         '''
@@ -129,9 +213,12 @@ class QTarray:
 
         print "Mapping Quadtree heads to base grid in layers..."
         uniformgrid = np.empty((parentGrid.nlay, nbaserows, nbasecols))
-
-        self.indexfiles = [f for f in self.indexfiles if int(re.findall(r'\d+', f)) in layers]      
-        
+        print layers
+        try:
+            layers[0]*1
+            self.indexfiles = [f for f in self.indexfiles if int(re.findall(r'\d+', f)[0]) in layers]      
+        except:
+            pass
 
         for f in self.indexfiles:
 
@@ -184,31 +271,33 @@ class Save:
             ax.set_title("Layer {0} {1}".format(l+1, title_description))
             pdf.savefig(fig)
         pdf.close()
-'''
-class baseArray:
 
-    #This class takes the node index constructed above and assigns values to the base array
-s
-    def __init__(self, baseNodeIndex):
+    def array2ESRIgrid(self, array, pdfname, title_description=None, zlabel=None, clim=None):
 
-        if not baseNodeIndex.indexfile:
-            nodes =
+        pdf=PdfPages(pdfname)
 
-        hdfile = 'wbasin.out.hds'
+        if len(np.shape(array)) == 2:
+            nlayers = 1
+        else:
+            nlayers = np.shape(array)[0]
 
-nrows = 456
-ncols = 468
-nlay = 9
+        print "\nSaving heads in layers to {0}...".format(pdfname)
 
+        for l in range(nlayers):
 
+            # if layer is empty, skip it
+            if np.isnan(np.max(array[l, :, :])):
+                continue
 
-baseheads = head[nodez]
-
-
-'''
-'''
-Time results on Mac:
-Layer 1 with node df converted back to numpy, and searching entire X and Y vector
-CPU times: user 2min 23s, sys: 1.87 s, total: 2min 25s
-Wall time: 2min 25s
-'''
+            print " ", l + 1,
+            fig = plt.figure()
+            ax = fig.add_subplot(111)
+            ax.set_axis_bgcolor('k')
+            im = ax.imshow(array[l, :, :], interpolation='nearest')
+            if clim:
+                im.set_clim(clim)
+            cb = fig.colorbar(im)
+            cb.set_label(zlabel)
+            ax.set_title("Layer {0} {1}".format(l+1, title_description))
+            pdf.savefig(fig)
+        pdf.close()
