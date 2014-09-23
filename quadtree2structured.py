@@ -9,20 +9,31 @@ from matplotlib.backends.backend_pdf import PdfPages
 
 
 
-class parentGrid:
+class gridInfo(object):
 
-    def __init__(self, nrows, ncols, nlay, parent_dxy, units, originX, originY):
+    def __init__(self, nrows, ncols, nlay, parent_dxy, base_dxy, units, originX, originY, idxfile=None):
         self.nrows = nrows
         self.ncols = ncols
         self.nlay = nlay
         self.dxy = parent_dxy
+        self.base_dxy = base_dxy
         self.units = units
         self.originX = originX
         self.originY = originY
 
+        self.nbaserows = self.nrows * self.dxy / self.base_dxy
+        self.nbasecols = self.ncols * self.dxy / self.base_dxy
+
+        if not idxfile:
+            raise IOError('No index files found! Run build_index method first to create index files '
+                          'for mapping USG output to regular grid.')
+        else:
+            self.idxfile = idxfile
+
+
 class qtpush:
 
-    def __init__(self, tsfile, parentGrid, levqtmax, bin=False, outfile=None):
+    def __init__(self, tsfile, parentGrid, levqtmax, bin=True, outfile=None):
         self.tsfile = tsfile
         self.nlaybg = parentGrid.nlay
         self.nrowbg = parentGrid.nrows
@@ -30,7 +41,6 @@ class qtpush:
         self.levqtmax = levqtmax
         self.bin = bin
         self.outfile = outfile
-        pass
         
     def rangefinder(self, qcode, ibgzero, jbgzero, levqtmax, nrowbg, ncolbg):
         
@@ -91,28 +101,27 @@ class qtpush:
         nrowbg is the number of rows in the base grid
         ncolbg is the number of columns in the base grid
         """
-        f = open(self.tsfile)
+        tsinfo = open(self.tsfile)
         nsgperbg = 2 ** self.levqtmax
         nrowsg = nsgperbg * self.nrowbg
         ncolsg = nsgperbg * self.ncolbg
         inodesg = np.zeros( (self.nlaybg, nrowsg, ncolsg), dtype=np.int)
         irowidx = np.zeros( (nrowsg * ncolsg), dtype=np.int)
         icolidx = np.zeros( (nrowsg * ncolsg), dtype=np.int)
-        nodes = f.readline()
-        for line in f:
+        nodes = tsinfo.readline()
+        for line in tsinfo:
             lnlst = line.split()
-            n = int(lnlst[0].replace(',',''))
-            print '\r{0}'.format(n),
+            n = int(lnlst[0].replace(',', ''))
             idx = lnlst[1]
-            k,i,j = eval(idx)
+            k, i, j = eval(idx)
             qcode=''
-            if(len(lnlst)>2):
-                qcode=lnlst[2]
-            (isgmin,isgmax,jsgmin,jsgmax) = self.rangefinder(qcode, i-1, j-1, self.levqtmax, 
+            if len(lnlst) > 2:
+                qcode = lnlst[2]
+            (isgmin, isgmax, jsgmin, jsgmax) = self.rangefinder(qcode, i-1, j-1, self.levqtmax,
                                                         self.nrowbg, self.ncolbg)
             inodesg[k-1, isgmin:isgmax, jsgmin:jsgmax] = n-1
-        f.close()
-        if bin:
+        tsinfo.close()
+        if self.bin:
             inodesg.dump(self.outfile)
         return inodesg
 
@@ -188,82 +197,59 @@ class buildIndex:
                 #np.savetxt("{0}{1}.dat".format(self.indexfile_basename, l+1), uniformgrid, fmt='%d', delimiter=' ')
                 uniformgrid.dump("{0}{1}.dat".format(self.indexfile_basename, l+1))
 
-class QTarray:
+class QTarray(gridInfo):
 
-    def __init__(self, buildIndex):
-
-        self.path2indexfiles = buildIndex.path2indexfiles
-        if len(self.path2indexfiles) == 0:
-            self.path2indexfiles = os.getcwd()
-
-        self.indexfile_basename = buildIndex.indexfile_basename
-
-        self.indexfiles = [f for f in os.listdir(self.path2indexfiles) if self.indexfile_basename in f]
-
-        if len(self.indexfiles) == 0:
-            raise IOError('No index files found! Run build_index method first to create index files '
-                          'for mapping USG output to regular grid.')
-
-    def mapQT2base(self, QTarray, parentGrid, base_dxy, layers='all'):
+    def mapQT2base(self, QTarray, layers='all'):
         '''
         maps values in MODFLOW-USG array to a base array, using index files generated above
         '''
-        nbaserows = parentGrid.nrows * parentGrid.dxy / base_dxy
-        nbasecols = parentGrid.ncols * parentGrid.dxy / base_dxy
 
         print "Mapping Quadtree heads to base grid in layers..."
-        uniformgrid = np.empty((parentGrid.nlay, nbaserows, nbasecols))
-        print layers
-        try:
-            layers[0]*1
-            self.indexfiles = [f for f in self.indexfiles if int(re.findall(r'\d+', f)[0]) in layers]      
-        except:
-            pass
 
-        for f in self.indexfiles:
+        self.uniformgrid = np.empty((self.nlay, self.nbaserows, self.nbasecols))
 
-            # determine layer index from file name
-            layer = int([c for c in f if c.isdigit()][0]) - 1
-            print " ", layer +1,
-            # read in index file
-            QT_base_indicies = np.load(f)
-            QT_base_indicies = QT_base_indicies.astype(int)
+        # load single index file for all layers
+        self.idx = np.load(self.idxfile)
 
-            # set values for current layer from USGarray, base on indicies from index file
+
+        if layers == 'all':
+            layers = np.arange(1, self.nlay + 1)
+
+        for l in layers:
+
+            print " ", l,
+            QT_base_indicies = self.idx[l-1, :, :].astype(int)
+
+            # set values for current layer from USGarray, based on indicies from index file
             basearray = QTarray[QT_base_indicies]
-            uniformgrid[layer, :, :] = np.reshape(basearray, (nbaserows, nbasecols))
-            uniformgrid[uniformgrid == 0] = np.nan #convert noflow cells and empty layers to nan
-            
-        return uniformgrid
+            self.uniformgrid[l-1, :, :] = np.reshape(basearray, (self.nbaserows, self.nbasecols))
+            self.uniformgrid[self.uniformgrid == 0] = np.nan #convert noflow cells and empty layers to nan
+
+        return self.uniformgrid
 
 
-class Save:
+    def toPDF(self, pdfname, title_description=None, zlabel=None, clim=None):
 
-    def __init__(self):
-        pass
+        pdf = PdfPages(pdfname)
 
-    def array2PDF(self, array, pdfname, title_description=None, zlabel=None, clim=None):
-
-        pdf=PdfPages(pdfname)
-
-        if len(np.shape(array)) == 2:
+        if len(np.shape(self.uniformgrid)) == 2:
             nlayers = 1
         else:
-            nlayers = np.shape(array)[0]
+            nlayers = np.shape(self.uniformgrid)[0]
 
         print "\nSaving heads in layers to {0}...".format(pdfname)
 
         for l in range(nlayers):
 
             # if layer is empty, skip it
-            if np.isnan(np.max(array[l, :, :])):
+            if np.isnan(np.max(self.uniformgrid[l, :, :])):
                 continue
 
             print " ", l + 1,
             fig = plt.figure()
             ax = fig.add_subplot(111)
             ax.set_axis_bgcolor('k')
-            im = ax.imshow(array[l, :, :], interpolation='nearest')
+            im = ax.imshow(self.uniformgrid[l, :, :], interpolation='nearest')
             if clim:
                 im.set_clim(clim)
             cb = fig.colorbar(im)
@@ -272,32 +258,26 @@ class Save:
             pdf.savefig(fig)
         pdf.close()
 
-    def array2ESRIgrid(self, array, pdfname, title_description=None, zlabel=None, clim=None):
+    def toESRIgrid(self, basename):
 
-        pdf=PdfPages(pdfname)
+        self.asc_header = 'ncols         {:.0f}\n' \
+                          'nrows         {:.0f}\n' \
+                          'xllcorner     {}\n' \
+                          'yllcorner     {}\n' \
+                          'cellsize      {}\n' \
+                          'NODATA_value  -9999\n'.format(self.nbasecols, self.nbaserows, self.originX,
+                                                         self.originY, self.base_dxy)
 
-        if len(np.shape(array)) == 2:
-            nlayers = 1
-        else:
-            nlayers = np.shape(array)[0]
+        for l in range(self.nlay):
 
-        print "\nSaving heads in layers to {0}...".format(pdfname)
-
-        for l in range(nlayers):
+            outfile = basename + '{}.asc'.format(l+1)
 
             # if layer is empty, skip it
-            if np.isnan(np.max(array[l, :, :])):
+            if np.isnan(np.max(self.uniformgrid[l, :, :])):
                 continue
 
-            print " ", l + 1,
-            fig = plt.figure()
-            ax = fig.add_subplot(111)
-            ax.set_axis_bgcolor('k')
-            im = ax.imshow(array[l, :, :], interpolation='nearest')
-            if clim:
-                im.set_clim(clim)
-            cb = fig.colorbar(im)
-            cb.set_label(zlabel)
-            ax.set_title("Layer {0} {1}".format(l+1, title_description))
-            pdf.savefig(fig)
-        pdf.close()
+            print "writing {}".format(outfile)
+            ofp = open(outfile, 'w')
+            ofp.write(self.asc_header)
+            np.savetxt(ofp, self.uniformgrid[l, :, :], delimiter=' ', fmt='%.2f')
+            ofp.close()
