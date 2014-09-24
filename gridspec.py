@@ -88,9 +88,10 @@ class gridSPC:
             [[ofp.write(' '.join(map(str, v)) + '\n')] for v in verts]
 
         i = 1
+        inode = 1
         for line in nods:
 
-            inode, lay = map(int, line.split()[0:2])
+            lay = int(line.split()[1])
             x, y, z = map(float, line.split()[2:5])
 
             ofp.write('{:.0f} {:.0f} {:.0f} {:.0f} {:.0f} 8'.format(inode, x, y, z, lay))
@@ -98,6 +99,7 @@ class gridSPC:
             ofp.write([' {:.0f}'.format(c) for c in np.arange(i, i + 8)])
             ofp.write('\n')
             i += 8
+            inode += 1
 
 
 
